@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "nginx -g 'daemon off;'"
+healthcheckPath = "/"
+healthcheckTimeout = 30
