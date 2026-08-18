@@ -1,7 +1,7 @@
-// In production on Railway, set VITE_API_URL=https://your-backend.railway.app
-// In local dev, Vite proxies /api → http://localhost:8000
-declare const __API_BASE__: string;
-const BASE = `${__API_BASE__}/afr-attendance-production.up.railway.app/face`;
+// Backend URL — set VITE_API_URL in Vercel environment variables
+// e.g. VITE_API_URL=https://afr-attendance-production.up.railway.app
+const BACKEND = import.meta.env.VITE_API_URL ?? 'https://afr-attendance-production.up.railway.app';
+const BASE = `${BACKEND}/api/face`;
 
 async function handleResponse(res: Response) {
   if (!res.ok) {
