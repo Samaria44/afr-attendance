@@ -2,9 +2,21 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from datetime import datetime, timezone
 
 from app.core.database import get_database
-from app.services.face_service import generate_encoding, compare_faces
+from app.services.face_service import generate_encoding, compare_faces, detect_face
 
 router = APIRouter(prefix="/api/face", tags=["Face Recognition"])
+
+
+# ─────────────────────────────────────────────
+# POST /api/face/detect  (fast — no DB, just bbox)
+# ─────────────────────────────────────────────
+@router.post("/detect")
+async def detect_faces(
+    image: UploadFile = File(..., description="Camera frame for face detection"),
+):
+    image_bytes = await image.read()
+    result = detect_face(image_bytes)
+    return result
 
 
 # ─────────────────────────────────────────────

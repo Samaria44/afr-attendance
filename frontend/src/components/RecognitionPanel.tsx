@@ -2,9 +2,19 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Camera, CameraOff, Upload, Search, RefreshCw,
   CheckCircle2, XCircle, Video, ImagePlus, Loader,
-  User, Building2, Clock, Hash,
+  User, Building2, Clock, Hash, ScanFace,
 } from 'lucide-react';
-import { recognizeFace, fetchLog } from '../api';
+import { recognizeFace, fetchLog, detectFaces } from '../api';
+
+interface BBox { x: number; y: number; width: number; height: number; }
+
+interface DetectResult {
+  face_detected: boolean;
+  number_of_faces: number;
+  image_width: number;
+  image_height: number;
+  faces: BBox[];
+}
 
 interface LogEntry {
   employee_id: string;
@@ -26,36 +36,160 @@ interface RecognitionResult {
 
 type Mode = 'upload' | 'camera';
 
-export default function RecognitionPanel() {
-  const videoRef    = useRef<HTMLVideoElement>(null);
-  const canvasRef   = useRef<HTMLCanvasElement>(null);
-  const streamRef   = useRef<MediaStream | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const fileRef     = useRef<HTMLInputElement>(null);
+// How long a face must be continuously visible before auto-recognizing (ms)
+const STABLE_MS = 2000;
 
-  const [mode, setMode]                     = useState<Mode>('upload');
-  const [cameraOn, setCameraOn]             = useState(false);
-  const [result, setResult]                 = useState<RecognitionResult | null>(null);
-  const [log, setLog]                       = useState<LogEntry[]>([]);
-  const [recognizing, setRecognizing]       = useState(false);
-  const [uploadPreview, setUploadPreview]   = useState<string | null>(null);
-  const [uploadBlob, setUploadBlob]         = useState<Blob | null>(null);
+export default function RecognitionPanel() {
+  const videoRef     = useRef<HTMLVideoElement>(null);
+  const overlayRef   = useRef<HTMLCanvasElement>(null);  // bbox overlay
+  const captureRef   = useRef<HTMLCanvasElement>(null);  // hidden, for grabbing frames
+  const streamRef    = useRef<MediaStream | null>(null);
+  const detectTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stableTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileRef      = useRef<HTMLInputElement>(null);
+
+  const [mode, setMode]                   = useState<Mode>('upload');
+  const [cameraOn, setCameraOn]           = useState(false);
+  const [result, setResult]               = useState<RecognitionResult | null>(null);
+  const [log, setLog]                     = useState<LogEntry[]>([]);
+  const [recognizing, setRecognizing]     = useState(false);
+  const [detecting, setDetecting]         = useState(false);
+  const [faceVisible, setFaceVisible]     = useState(false);
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  const [uploadBlob, setUploadBlob]       = useState<Blob | null>(null);
 
   const refreshLog = useCallback(async () => {
-    try {
-      const data = await fetchLog();
-      setLog(data.log ?? []);
-    } catch { /* ignore */ }
+    try { const d = await fetchLog(); setLog(d.log ?? []); } catch { /**/ }
   }, []);
 
-  // ── Camera ───────────────────────────────────────────────────────
+  // ── Draw bounding boxes on overlay canvas ─────────────────────────
+  const drawBoxes = useCallback((
+    detect: DetectResult,
+    videoW: number,
+    videoH: number,
+  ) => {
+    const canvas = overlayRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width  = videoW;
+    canvas.height = videoH;
+    ctx.clearRect(0, 0, videoW, videoH);
+
+    if (!detect.face_detected) return;
+
+    // Scale from image coords to display coords
+    const scaleX = videoW  / (detect.image_width  || videoW);
+    const scaleY = videoH / (detect.image_height || videoH);
+
+    detect.faces.forEach(box => {
+      const x = box.x * scaleX;
+      const y = box.y * scaleY;
+      const w = box.width  * scaleX;
+      const h = box.height * scaleY;
+
+      // Outer glow
+      ctx.shadowColor = '#22c55e';
+      ctx.shadowBlur  = 12;
+
+      // Box
+      ctx.strokeStyle = '#22c55e';
+      ctx.lineWidth   = 2.5;
+      ctx.strokeRect(x, y, w, h);
+
+      ctx.shadowBlur = 0;
+
+      // Corner accents
+      const cs = 16; // corner size
+      ctx.strokeStyle = '#4ade80';
+      ctx.lineWidth   = 3;
+      // top-left
+      ctx.beginPath(); ctx.moveTo(x, y + cs); ctx.lineTo(x, y); ctx.lineTo(x + cs, y); ctx.stroke();
+      // top-right
+      ctx.beginPath(); ctx.moveTo(x + w - cs, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cs); ctx.stroke();
+      // bottom-left
+      ctx.beginPath(); ctx.moveTo(x, y + h - cs); ctx.lineTo(x, y + h); ctx.lineTo(x + cs, y + h); ctx.stroke();
+      // bottom-right
+      ctx.beginPath(); ctx.moveTo(x + w - cs, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cs); ctx.stroke();
+
+      // Label
+      ctx.fillStyle = '#22c55e';
+      ctx.font      = 'bold 11px Inter, sans-serif';
+      ctx.fillText('Face Detected', x + 4, y - 6);
+    });
+  }, []);
+
+  // ── Grab a frame blob from the video ──────────────────────────────
+  const grabFrame = useCallback((): Promise<Blob | null> => {
+    return new Promise(resolve => {
+      const video  = videoRef.current;
+      const canvas = captureRef.current;
+      if (!video || !canvas) return resolve(null);
+      canvas.width  = video.videoWidth  || 640;
+      canvas.height = video.videoHeight || 480;
+      canvas.getContext('2d')?.drawImage(video, 0, 0);
+      canvas.toBlob(resolve, 'image/jpeg', 0.85);
+    });
+  }, []);
+
+  // ── Detection loop (runs every 800ms while camera is on) ──────────
+  const runDetect = useCallback(async () => {
+    if (detecting) return;
+    setDetecting(true);
+    try {
+      const blob = await grabFrame();
+      if (!blob) return;
+
+      const res: DetectResult = await detectFaces(blob);
+      const video = videoRef.current;
+      const vw = video?.clientWidth  || 640;
+      const vh = video?.clientHeight || 480;
+
+      drawBoxes(res, vw, vh);
+      setFaceVisible(res.face_detected && res.number_of_faces === 1);
+
+      if (!res.face_detected || res.number_of_faces !== 1) {
+        // Clear stable timer if face disappears
+        if (stableTimerRef.current) {
+          clearTimeout(stableTimerRef.current);
+          stableTimerRef.current = null;
+        }
+      }
+    } catch { /**/ } finally {
+      setDetecting(false);
+    }
+  }, [detecting, drawBoxes, grabFrame]);
+
+  // ── Start stable-face timer → auto-recognize ──────────────────────
+  useEffect(() => {
+    if (!cameraOn) return;
+
+    if (faceVisible && !recognizing) {
+      if (!stableTimerRef.current) {
+        stableTimerRef.current = setTimeout(async () => {
+          stableTimerRef.current = null;
+          const blob = await grabFrame();
+          if (blob) await runRecognition(blob);
+        }, STABLE_MS);
+      }
+    } else {
+      if (stableTimerRef.current) {
+        clearTimeout(stableTimerRef.current);
+        stableTimerRef.current = null;
+      }
+    }
+  }, [faceVisible, cameraOn, recognizing]);
+
+  // ── Camera on/off ─────────────────────────────────────────────────
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play(); }
       setCameraOn(true);
-      intervalRef.current = setInterval(() => captureAndRecognize(), 3000);
+      setResult(null);
+      detectTimerRef.current = setInterval(runDetect, 800);
     } catch {
       alert('Camera not available. Switch to Upload Image mode.');
     }
@@ -64,20 +198,19 @@ export default function RecognitionPanel() {
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
-    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (detectTimerRef.current) clearInterval(detectTimerRef.current);
+    if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
+    detectTimerRef.current = null;
+    stableTimerRef.current = null;
+    // Clear overlay
+    const ctx = overlayRef.current?.getContext('2d');
+    if (ctx && overlayRef.current) ctx.clearRect(0, 0, overlayRef.current.width, overlayRef.current.height);
     setCameraOn(false);
+    setFaceVisible(false);
     setResult(null);
   };
 
-  const captureAndRecognize = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current || recognizing) return;
-    const v = videoRef.current, c = canvasRef.current;
-    c.width = v.videoWidth || 640; c.height = v.videoHeight || 480;
-    c.getContext('2d')?.drawImage(v, 0, 0);
-    c.toBlob(async (blob) => { if (blob) await runRecognition(blob); }, 'image/jpeg', 0.85);
-  }, [recognizing]);
-
-  // ── Upload ───────────────────────────────────────────────────────
+  // ── Upload mode ───────────────────────────────────────────────────
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -86,7 +219,7 @@ export default function RecognitionPanel() {
     setResult(null);
   };
 
-  // ── Shared ───────────────────────────────────────────────────────
+  // ── Shared recognition ────────────────────────────────────────────
   const runRecognition = async (blob: Blob) => {
     setRecognizing(true);
     try {
@@ -105,6 +238,7 @@ export default function RecognitionPanel() {
     return () => { stopCamera(); };
   }, []);
 
+  // ── Render ────────────────────────────────────────────────────────
   return (
     <div style={{
       background: '#fff', borderRadius: 14, padding: 28,
@@ -112,15 +246,16 @@ export default function RecognitionPanel() {
       boxShadow: '0 1px 3px rgba(0,0,0,0.07), 0 4px 16px rgba(0,0,0,0.05)',
       border: '1px solid #e8eaf0',
     }}>
+
       {/* Panel header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
         <div style={{ background: '#ecfdf5', borderRadius: 8, padding: 7, display: 'flex' }}>
-          <Camera size={18} color="#059669" />
+          <ScanFace size={18} color="#059669" strokeWidth={1.8} />
         </div>
         <div>
           <h2 style={{ fontSize: 15, fontWeight: 700 }}>Live Recognition</h2>
           <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
-            Upload a photo or use live camera to identify employees
+            Face is auto-detected and recognized when stable
           </p>
         </div>
       </div>
@@ -129,7 +264,7 @@ export default function RecognitionPanel() {
 
       {/* Mode toggle */}
       <div style={{
-        display: 'flex', gap: 0, background: '#f1f5f9',
+        display: 'flex', background: '#f1f5f9',
         borderRadius: 10, padding: 4, marginBottom: 18,
       }}>
         {(['upload', 'camera'] as Mode[]).map(m => (
@@ -138,15 +273,15 @@ export default function RecognitionPanel() {
             style={{
               flex: 1, padding: '8px 0', borderRadius: 7, border: 'none',
               fontWeight: 600, fontSize: 12,
-              background: mode === m ? '#fff' : 'transparent',
-              color:      mode === m ? '#1e293b' : '#94a3b8',
+              background: mode === m ? '#fff'        : 'transparent',
+              color:      mode === m ? '#1e293b'     : '#94a3b8',
               boxShadow:  mode === m ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               transition: 'all 0.2s',
             }}>
             {m === 'upload'
               ? <><ImagePlus size={13} /> Upload Image</>
-              : <><Video size={13} /> Live Camera</>}
+              : <><Video size={13} />     Live Camera</>}
           </button>
         ))}
       </div>
@@ -176,9 +311,7 @@ export default function RecognitionPanel() {
                   }}>
                     <Upload size={24} color="#94a3b8" />
                   </div>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>
-                    Click to select an image
-                  </p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>Click to select an image</p>
                   <p style={{ fontSize: 11, marginTop: 4 }}>JPG, PNG or WEBP</p>
                 </div>
               )
@@ -194,8 +327,7 @@ export default function RecognitionPanel() {
               width: '100%', marginTop: 10, padding: '11px 0',
               borderRadius: 9, border: 'none', fontWeight: 700, fontSize: 13,
               background: uploadBlob && !recognizing
-                ? 'linear-gradient(135deg, #059669, #047857)'
-                : '#e2e8f0',
+                ? 'linear-gradient(135deg, #059669, #047857)' : '#e2e8f0',
               color: uploadBlob && !recognizing ? '#fff' : '#94a3b8',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               boxShadow: uploadBlob && !recognizing ? '0 4px 12px rgba(5,150,105,0.25)' : 'none',
@@ -211,52 +343,81 @@ export default function RecognitionPanel() {
       {/* ── CAMERA MODE ── */}
       {mode === 'camera' && (
         <div style={{ marginBottom: 16 }}>
+          {/* Video + overlay stacked */}
           <div style={{
             position: 'relative', background: '#0f172a',
-            borderRadius: 10, overflow: 'hidden', minHeight: 220,
+            borderRadius: 10, overflow: 'hidden', minHeight: 240,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <video ref={videoRef} autoPlay muted playsInline
               style={{ width: '100%', display: 'block' }} />
-            <canvas ref={canvasRef} style={{ display: 'none' }} />
+
+            {/* Overlay canvas — sits exactly on top of video */}
+            <canvas ref={overlayRef} style={{
+              position: 'absolute', inset: 0,
+              width: '100%', height: '100%',
+              pointerEvents: 'none',
+            }} />
+
+            {/* Hidden capture canvas */}
+            <canvas ref={captureRef} style={{ display: 'none' }} />
 
             {!cameraOn && (
-              <div style={{ textAlign: 'center', color: '#475569', position: 'absolute' }}>
-                <CameraOff size={32} color="#475569" style={{ margin: '0 auto 8px' }} />
+              <div style={{
+                position: 'absolute', textAlign: 'center', color: '#475569',
+              }}>
+                <CameraOff size={32} color="#475569" style={{ margin: '0 auto 8px', display: 'block' }} />
                 <p style={{ fontSize: 12 }}>Camera is off</p>
               </div>
             )}
 
+            {/* Top-left status */}
             {cameraOn && (
               <div style={{
                 position: 'absolute', top: 10, left: 10,
                 background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
                 borderRadius: 20, padding: '4px 12px', fontSize: 11,
-                color: '#fff', display: 'flex', alignItems: 'center', gap: 5,
+                color: '#fff', display: 'flex', alignItems: 'center', gap: 6,
               }}>
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />
-                Live
+                <span style={{
+                  width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
+                  background: faceVisible ? '#22c55e' : '#f59e0b',
+                }} />
+                {faceVisible ? 'Face detected' : 'Scanning...'}
               </div>
             )}
 
-            <button
-              onClick={cameraOn ? stopCamera : startCamera}
-              style={{
-                position: 'absolute', top: 10, right: 10,
-                background: cameraOn ? '#ef4444' : '#22c55e',
-                color: '#fff', border: 'none', borderRadius: 7,
-                padding: '6px 14px', fontSize: 12, fontWeight: 600,
-                display: 'flex', alignItems: 'center', gap: 5,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-              }}>
+            {/* Top-right button */}
+            <button onClick={cameraOn ? stopCamera : startCamera} style={{
+              position: 'absolute', top: 10, right: 10,
+              background: cameraOn ? '#ef4444' : '#22c55e',
+              color: '#fff', border: 'none', borderRadius: 7,
+              padding: '6px 14px', fontSize: 12, fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 5,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+            }}>
               {cameraOn
                 ? <><CameraOff size={13} /> Stop</>
-                : <><Camera size={13} /> Start</>}
+                : <><Camera    size={13} /> Start</>}
             </button>
+
+            {/* Recognizing spinner overlay */}
+            {recognizing && (
+              <div style={{
+                position: 'absolute', inset: 0,
+                background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)',
+                display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center', gap: 10,
+              }}>
+                <Loader size={28} color="#fff" style={{ animation: 'spin 1s linear infinite' }} />
+                <span style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>Recognizing...</span>
+              </div>
+            )}
           </div>
+
           {cameraOn && (
             <p style={{ fontSize: 11, textAlign: 'center', color: '#94a3b8', marginTop: 8 }}>
-              Auto-recognizing every 3 seconds
+              Hold face steady for {STABLE_MS / 1000}s to trigger automatic recognition
             </p>
           )}
         </div>
@@ -280,7 +441,7 @@ export default function RecognitionPanel() {
             }}>
               {result.matched
                 ? <CheckCircle2 size={26} color="#16a34a" />
-                : <XCircle size={26} color="#dc2626" />}
+                : <XCircle      size={26} color="#dc2626" />}
             </div>
             <div style={{ flex: 1 }}>
               <p style={{
@@ -291,14 +452,14 @@ export default function RecognitionPanel() {
               </p>
               {result.matched ? (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
-                  <ResultItem icon={<Hash size={11} />}      label="ID"         value={result.employee_id ?? '—'} />
-                  <ResultItem icon={<User size={11} />}      label="Name"       value={result.name} />
-                  <ResultItem icon={<Building2 size={11} />} label="Department" value={result.department ?? '—'} />
-                  <ResultItem icon={<Clock size={11} />}     label="Time"       value={result.time} />
+                  <ResultItem icon={<Hash       size={11} />} label="ID"         value={result.employee_id ?? '—'} />
+                  <ResultItem icon={<User       size={11} />} label="Name"       value={result.name} />
+                  <ResultItem icon={<Building2  size={11} />} label="Department" value={result.department ?? '—'} />
+                  <ResultItem icon={<Clock      size={11} />} label="Time"       value={result.time} />
                 </div>
               ) : (
                 <p style={{ fontSize: 12, color: '#94a3b8' }}>
-                  No matching employee — similarity score: <strong>{result.similarity}</strong>
+                  No matching employee found — similarity: <strong>{result.similarity}</strong>
                 </p>
               )}
             </div>
@@ -306,7 +467,7 @@ export default function RecognitionPanel() {
         </div>
       )}
 
-      {/* ── Log ── */}
+      {/* ── Log table ── */}
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: '#64748b' }}>
@@ -361,7 +522,7 @@ export default function RecognitionPanel() {
                     }}>
                       {entry.status === 'Matched'
                         ? <CheckCircle2 size={10} />
-                        : <XCircle size={10} />}
+                        : <XCircle      size={10} />}
                       {entry.status}
                     </span>
                   </td>

@@ -21,6 +21,14 @@ export async function registerImage(
   return res.json();
 }
 
+export async function detectFaces(imageBlob: Blob) {
+  const form = new FormData();
+  form.append('image', imageBlob, 'frame.jpg');
+  const res = await fetch(`${BASE}/detect`, { method: 'POST', body: form });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function recognizeFace(imageBlob: Blob) {
   const form = new FormData();
   form.append('image', imageBlob, 'capture.jpg');

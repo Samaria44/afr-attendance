@@ -28,15 +28,30 @@ def detect_face(image_bytes: bytes):
     image = _decode_image(image_bytes)
 
     if image is None:
-        return {"success": False, "message": "Invalid image file"}
+        return {"success": False, "message": "Invalid image file", "faces": []}
 
     app = get_face_app()
     faces = app.get(image)
 
+    h, w = image.shape[:2]
+
+    boxes = []
+    for face in faces:
+        x1, y1, x2, y2 = face.bbox.astype(int)
+        boxes.append({
+            "x":      max(0, int(x1)),
+            "y":      max(0, int(y1)),
+            "width":  max(0, int(x2 - x1)),
+            "height": max(0, int(y2 - y1)),
+        })
+
     return {
-        "success": True,
+        "success":       True,
         "face_detected": len(faces) > 0,
-        "number_of_faces": len(faces)
+        "number_of_faces": len(faces),
+        "image_width":   w,
+        "image_height":  h,
+        "faces":         boxes,
     }
 
 
