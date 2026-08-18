@@ -1,39 +1,41 @@
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING
-import os
+from app.core.config import get_settings
+import logging
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME   = os.getenv("DB_NAME",   "afr_attendance")
+logger = logging.getLogger(__name__)
 
 _client: AsyncIOMotorClient = None
 
 
 def get_database() -> AsyncIOMotorDatabase:
-    return _client[DB_NAME]
+    settings = get_settings()
+    return _client[settings.DB_NAME]
 
 
 async def connect_db():
     global _client
-    _client = AsyncIOMotorClient(MONGO_URI)
-
-    db = _client[DB_NAME]
-
-    # Ping to verify connection is actually alive
+    settings = get_settings()
+    _client = AsyncIOMotorClient(
+        settings.MONGO_URI,
+        serverSelectionTimeoutMS=10000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=10000,
+    )
+    db = _client[settings.DB_NAME]
     await _client.admin.command("ping")
 
-    # Create indexes using the async motor API
     await db["employees"].create_index(
         [("employee_id", ASCENDING)], unique=True
     )
     await db["recognition_log"].create_index(
         [("timestamp", DESCENDING)]
     )
-
-    print(f" Connected to MongoDB  →  {MONGO_URI}  /  {DB_NAME}")
+    logger.info("Connected to MongoDB → %s", settings.DB_NAME)
 
 
 async def close_db():
     global _client
     if _client:
         _client.close()
-        print("🔌 MongoDB connection closed")
+        logger.info("MongoDB connection closed")

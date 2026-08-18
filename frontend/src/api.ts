@@ -1,24 +1,32 @@
-const BASE = 'http://localhost:8000/api/face';
+// In production (Docker/nginx) the API is served from the same origin via proxy.
+// In local dev, Vite proxies /api → http://localhost:8000 (see vite.config.ts).
+const BASE = '/api/face';
+
+async function handleResponse(res: Response) {
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body.detail ?? detail;
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
 
 export async function registerImage(
   employeeId: string,
   name: string,
   department: string,
   imageBlob: Blob,
-  filename: string
+  filename: string,
 ) {
   const form = new FormData();
   form.append('employee_id', employeeId);
   form.append('name', name);
   form.append('department', department);
   form.append('image', imageBlob, filename);
-
-  const res = await fetch(`${BASE}/register`, { method: 'POST', body: form });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail ?? 'Registration failed');
-  }
-  return res.json();
+  return handleResponse(await fetch(`${BASE}/register`, { method: 'POST', body: form }));
 }
 
 export async function detectFaces(imageBlob: Blob) {
@@ -32,16 +40,19 @@ export async function detectFaces(imageBlob: Blob) {
 export async function recognizeFace(imageBlob: Blob) {
   const form = new FormData();
   form.append('image', imageBlob, 'capture.jpg');
-
-  const res = await fetch(`${BASE}/recognize`, { method: 'POST', body: form });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail ?? 'Recognition failed');
-  }
-  return res.json();
+  return handleResponse(await fetch(`${BASE}/recognize`, { method: 'POST', body: form }));
 }
 
-export async function fetchLog() {
-  const res = await fetch(`${BASE}/log`);
-  return res.json();
+export async function fetchLog(limit = 20) {
+  return handleResponse(await fetch(`${BASE}/log?limit=${limit}`));
+}
+
+export async function fetchEmployees() {
+  return handleResponse(await fetch(`${BASE}/employees`));
+}
+
+export async function deleteEmployee(employeeId: string) {
+  return handleResponse(
+    await fetch(`${BASE}/employees/${encodeURIComponent(employeeId)}`, { method: 'DELETE' }),
+  );
 }
