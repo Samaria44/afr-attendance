@@ -1,6 +1,6 @@
-// Backend URL — set VITE_API_URL in Vercel environment variables
-// e.g. VITE_API_URL=https://afr-attendance-production.up.railway.app
-const BACKEND = import.meta.env.VITE_API_URL ?? 'https://afr-attendance-production.up.railway.app';
+// LOCAL DEV: points to localhost:8000
+// For production set VITE_API_URL in your hosting env vars
+const BACKEND = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 const BASE = `${BACKEND}/api/face`;
 
 async function handleResponse(res: Response) {
