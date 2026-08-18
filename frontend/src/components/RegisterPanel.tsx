@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import {
-  UserPlus, Camera, Trash2, RotateCcw, CheckCircle,
+  UserPlus, Trash2, RotateCcw, CheckCircle,
   AlertCircle, Upload, ChevronDown, Loader,
 } from 'lucide-react';
 import { registerImage } from '../api';
