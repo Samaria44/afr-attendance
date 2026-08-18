@@ -19,4 +19,6 @@ RUN python -c "from app.services.face_service import get_face_app; get_face_app(
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "$PORT", "--workers", "1"]
+# Shell form so $PORT env var is expanded at runtime
+# Railway sets $PORT automatically; defaults to 8000 for local Docker
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
