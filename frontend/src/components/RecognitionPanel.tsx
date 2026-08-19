@@ -181,17 +181,55 @@ export default function RecognitionPanel() {
     }
   }, [faceVisible, cameraOn, recognizing]);
 
+  const [devices, setDevices]             = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [camError, setCamError]           = useState('');
+
+  // Load available cameras on mount
+  useEffect(() => {
+    navigator.mediaDevices.enumerateDevices().then(all => {
+      const cams = all.filter(d => d.kind === 'videoinput');
+      setDevices(cams);
+      if (cams.length > 0) setSelectedDeviceId(cams[0].deviceId);
+    }).catch(() => {});
+  }, []);
+
   // ── Camera on/off ─────────────────────────────────────────────────
   const startCamera = async () => {
+    setCamError('');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      // Re-enumerate to get labels (requires permission first time)
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      const cams = allDevices.filter(d => d.kind === 'videoinput');
+      setDevices(cams);
+
+      const constraints: MediaStreamConstraints = {
+        video: {
+          deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
+          width:  { ideal: 1280 },
+          height: { ideal: 720 },
+        }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
-      if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play(); }
+      if (videoRef.current) {
+        const video = videoRef.current;
+        video.srcObject = stream;
+        // Wait for metadata before playing — fixes green screen with virtual cameras
+        await new Promise<void>((resolve) => {
+          video.onloadedmetadata = () => resolve();
+        });
+        await video.play();
+      }
       setCameraOn(true);
       setResult(null);
       detectTimerRef.current = setInterval(runDetect, 800);
-    } catch {
-      alert('Camera not available. Switch to Upload Image mode.');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Camera error';
+      setCamError(msg.includes('Permission') || msg.includes('NotAllowed')
+        ? 'Camera permission denied. Allow camera access in your browser.'
+        : 'Could not open camera: ' + msg);
     }
   };
 
@@ -343,6 +381,40 @@ export default function RecognitionPanel() {
       {/* ── CAMERA MODE ── */}
       {mode === 'camera' && (
         <div style={{ marginBottom: 16 }}>
+
+          {/* Camera device selector */}
+          {devices.length > 1 && !cameraOn && (
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>
+                Select Camera
+              </label>
+              <select
+                value={selectedDeviceId}
+                onChange={e => setSelectedDeviceId(e.target.value)}
+                style={{
+                  width: '100%', padding: '8px 10px', borderRadius: 7,
+                  border: '1px solid #e2e8f0', fontSize: 12, background: '#f8fafc',
+                }}
+              >
+                {devices.map((d, i) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || `Camera ${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Error message */}
+          {camError && (
+            <div style={{
+              marginBottom: 10, padding: '9px 12px', borderRadius: 8,
+              background: '#fef2f2', border: '1px solid #fecaca',
+              fontSize: 12, color: '#dc2626', display: 'flex', gap: 8, alignItems: 'center',
+            }}>
+              <XCircle size={14} /> {camError}
+            </div>
+          )}
           {/* Video + overlay stacked */}
           <div style={{
             position: 'relative', background: '#0f172a',
@@ -350,7 +422,7 @@ export default function RecognitionPanel() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <video ref={videoRef} autoPlay muted playsInline
-              style={{ width: '100%', display: 'block' }} />
+              style={{ width: '100%', display: 'block', background: '#000' }} />
 
             {/* Overlay canvas — sits exactly on top of video */}
             <canvas ref={overlayRef} style={{
