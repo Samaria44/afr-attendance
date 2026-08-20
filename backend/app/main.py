@@ -8,8 +8,8 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.core.database import connect_db, close_db
 from app.routes.face import router as face_router
+from app.routes.auth import router as auth_router
 
-# ── Logging ───────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
@@ -18,7 +18,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ── Lifespan ──────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_db()
@@ -26,19 +25,16 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 
-# ── App ───────────────────────────────────────────────────────────
 settings = get_settings()
 
 app = FastAPI(
     title="AFR Face Recognition API",
-    description="Automated Face Recognition Attendance System",
     version="1.0.0",
-    docs_url="/docs" if settings.APP_ENV != "production" else None,
-    redoc_url="/redoc" if settings.APP_ENV != "production" else None,
     lifespan=lifespan,
+    docs_url="/docs" if settings.APP_ENV != "production" else None,
+    redoc_url=None,
 )
 
-# ── CORS ──────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.origins,
@@ -47,24 +43,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Global exception handler ──────────────────────────────────────
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled exception: %s", exc, exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"},
-    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
-# ── Routes ────────────────────────────────────────────────────────
+
+app.include_router(auth_router)
 app.include_router(face_router)
 
 
 @app.get("/", tags=["Health"])
 def root():
-    return {"message": "AFR Face Recognition API is running", "version": "1.0.0"}
+    return {"message": "AFR Face Recognition API", "version": "1.0.0"}
 
 
 @app.get("/health", tags=["Health"])
-async def health():
+def health():
     return {"status": "healthy", "env": settings.APP_ENV}

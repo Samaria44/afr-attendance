@@ -1,9 +1,11 @@
 import { useRef, useState } from 'react';
 import {
   UserPlus, Trash2, RotateCcw, CheckCircle,
-  AlertCircle, Upload, ChevronDown, Loader,
+  AlertCircle, Upload, ChevronDown, Loader, Lock,
 } from 'lucide-react';
 import { registerImage } from '../api';
+import { can } from '../permissions';
+import { getUser } from '../auth';
 
 const DEPARTMENTS = [
   'Software Engineering', 'Human Resources', 'Finance',
@@ -11,6 +13,28 @@ const DEPARTMENTS = [
 ];
 
 export default function RegisterPanel() {
+  const user = getUser();
+  const canRegister = can(user, 'face:register_employee');
+
+  // Viewer: show locked panel
+  if (!canRegister) {
+    return (
+      <div style={{
+        background: '#fff', borderRadius: 14, padding: 28, flex: 1, minWidth: 340,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.07), 0 4px 16px rgba(0,0,0,0.05)',
+        border: '1px solid #e8eaf0', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', minHeight: 300, gap: 12,
+      }}>
+        <div style={{ background: '#f1f5f9', borderRadius: 12, padding: 16, display: 'flex' }}>
+          <Lock size={28} color="#94a3b8" />
+        </div>
+        <p style={{ fontSize: 14, fontWeight: 700, color: '#475569' }}>Access Restricted</p>
+        <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', maxWidth: 220 }}>
+          Your role <strong>{user?.role}</strong> does not have permission to register employees.
+        </p>
+      </div>
+    );
+  }
   const [employeeId, setEmployeeId]   = useState('');
   const [name, setName]               = useState('');
   const [department, setDepartment]   = useState(DEPARTMENTS[0]);
