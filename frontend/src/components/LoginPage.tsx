@@ -41,7 +41,7 @@ export default function LoginPage({ onLogin, needsSetup }: Props) {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)',
+      background: 'linear-gradient(135deg, #cebcc9ff 0%, #cfb9c7ff 50%, #cec6cfff 100%)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       padding: 20,
     }}>
@@ -53,11 +53,11 @@ export default function LoginPage({ onLogin, needsSetup }: Props) {
         {/* Logo */}
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{
-            background: 'linear-gradient(135deg, #7c3aed, #5b4fcf)',
+            background: 'linear-gradient(135deg, #96446aff, #583252ff)',
             borderRadius: 14, width: 60, height: 60,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             margin: '0 auto 14px',
-            boxShadow: '0 8px 20px rgba(124,58,237,0.35)',
+            boxShadow: '0 8px 20px rgba(235, 224, 229, 0.35)',
           }}>
             <ScanFace size={30} color="#fff" strokeWidth={1.8} />
           </div>
@@ -146,10 +146,10 @@ export default function LoginPage({ onLogin, needsSetup }: Props) {
           <button type="submit" disabled={loading} style={{
             width: '100%', padding: '13px 0', borderRadius: 9,
             border: 'none', fontWeight: 700, fontSize: 14,
-            background: loading ? '#c4b5fd' : 'linear-gradient(135deg, #7c3aed, #5b4fcf)',
-            color: '#fff', cursor: loading ? 'not-allowed' : 'pointer',
+            background: loading ? '#c04170ff' : 'linear-gradient(135deg, #8b3a5e #b95c86ff)',
+            color: '#141414ff', cursor: loading ? 'not-allowed' : 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            boxShadow: '0 4px 14px rgba(124,58,237,0.35)',
+            boxShadow: '0 4px 14px rgba(70, 13, 48, 0.35)',
             transition: 'opacity 0.2s',
           }}>
             {loading
@@ -159,7 +159,7 @@ export default function LoginPage({ onLogin, needsSetup }: Props) {
           </button>
         </form>
 
-        <p style={{ textAlign: 'center', fontSize: 11, color: '#cbd5e1', marginTop: 20 }}>
+        <p style={{ textAlign: 'center', fontSize: 11, color: '#030303ff', marginTop: 20 }}>
           AFR Face Recognition · Attendance System
         </p>
       </div>
