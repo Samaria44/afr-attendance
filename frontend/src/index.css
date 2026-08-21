@@ -14,9 +14,92 @@ input, select, textarea { font-family: inherit; outline: none; }
 ::-webkit-scrollbar-track { background: #f0f2f8; }
 ::-webkit-scrollbar-thumb { background: #dde0ea; border-radius: 3px; }
 
+/* ── Animations ─────────────────────────────────────────────── */
 @keyframes spin      { to { transform: rotate(360deg); } }
 @keyframes shimmer   { 0% { background-position:-400px 0 } 100% { background-position:400px 0 } }
 @keyframes fade-in   { from { opacity:0; transform:translateY(5px) } to { opacity:1; transform:none } }
 @keyframes pulse-dot { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
 
 .fade-in { animation: fade-in 0.22s ease both; }
+
+/* ── Responsive utility classes ─────────────────────────────── */
+
+/* Page padding */
+.page-pad { padding: 24px 28px; }
+
+/* Stat grid: 4 cols → 2 cols → 1 col */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+/* 2-col grid */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+/* 3-col grid */
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+/* Dashboard main layout: table + side panel */
+.dashboard-main {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 16px;
+}
+
+/* Recognition layout: camera 60% + result 40% */
+.recognition-main {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+
+/* Scrollable table wrapper */
+.table-wrap { overflow-x: auto; }
+
+/* Header row: title + actions */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* ── Tablet: ≤1200px ────────────────────────────────────────── */
+@media (max-width: 1200px) {
+  .stat-grid    { grid-template-columns: repeat(2, 1fr); }
+  .dashboard-main { grid-template-columns: 1fr; }
+}
+
+/* ── Small tablet: ≤900px ───────────────────────────────────── */
+@media (max-width: 900px) {
+  .recognition-main { grid-template-columns: 1fr; }
+  .page-pad { padding: 18px 18px; }
+}
+
+/* ── Mobile: ≤640px ─────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .stat-grid  { grid-template-columns: 1fr 1fr; }
+  .grid-2     { grid-template-columns: 1fr; }
+  .grid-3     { grid-template-columns: 1fr 1fr; }
+  .page-pad   { padding: 14px 14px; }
+  .page-header { flex-direction: column; align-items: stretch; }
+}
+
+/* ── Very small: ≤400px ─────────────────────────────────────── */
+@media (max-width: 400px) {
+  .stat-grid  { grid-template-columns: 1fr; }
+  .grid-3     { grid-template-columns: 1fr; }
+}
