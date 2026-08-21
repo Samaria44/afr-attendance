@@ -69,7 +69,7 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="fade-in" style={{ padding: '24px 28px' }}>
+    <div className="fade-in page-pad">
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
         <div>
@@ -89,7 +89,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16, marginBottom: 24 }}>
+      <div className="stat-grid">
         {stats.map(s => (
           <div key={s.label} style={{
             background: T.cardBg, borderRadius: T.r2, border: `1px solid ${T.border}`,
@@ -113,7 +113,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Main content row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16 }}>
+      <div className="dashboard-main">
 
         {/* Recent log table */}
         <div style={{ background: T.cardBg, borderRadius: T.r2, border: `1px solid ${T.border}`, boxShadow: T.shadow, overflow: 'hidden' }}>

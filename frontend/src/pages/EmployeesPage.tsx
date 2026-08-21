@@ -75,8 +75,8 @@ export default function EmployeesPage() {
   const filled = blobs.filter(Boolean).length;
 
   return (
-    <div className="fade-in" style={{ padding:'24px 28px' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:22 }}>
+    <div className="fade-in page-pad">
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:22, flexWrap:'wrap', gap:10 }}>
         <div>
           <h1 style={{ fontSize:20, fontWeight:700, color:T.text, marginBottom:3 }}>Employees</h1>
           <p style={{ fontSize:13, color:T.textSub }}>{employees.length} registered employees</p>
@@ -106,7 +106,7 @@ export default function EmployeesPage() {
       )}
 
       {/* Table card */}
-      <div style={{ background:T.cardBg, borderRadius:T.r2, border:`1px solid ${T.border}`, boxShadow:T.shadow, overflow:'hidden' }}>
+      <div className="table-wrap" style={{ background:T.cardBg, borderRadius:T.r2, border:`1px solid ${T.border}`, boxShadow:T.shadow, overflow:'hidden' }}>
         <div style={{ padding:'12px 16px', borderBottom:`1px solid ${T.border}`, display:'flex', alignItems:'center', gap:10 }}>
           <Search size={14} color={T.textDim} />
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search employees..."
@@ -182,7 +182,7 @@ export default function EmployeesPage() {
 
             <div style={{ padding:'24px' }}>
               {/* Row 1: Employee ID + Full Name */}
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:16 }}>
+              <div className="grid-2" style={{ marginBottom:16 }}>
                 <div>
                   <label style={{ fontSize:11, fontWeight:600, color:T.textSub, display:'block', marginBottom:6, textTransform:'uppercase', letterSpacing:0.6 }}>Employee ID</label>
                   <input value={empId} onChange={e=>setEmpId(e.target.value)} placeholder="e.g. EMP-001"
