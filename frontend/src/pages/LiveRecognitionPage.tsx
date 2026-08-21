@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  Camera, CameraOff, Upload, Search, RefreshCw,
-  CheckCircle2, XCircle, Loader, Clock, User,
-  Building2, Hash, Wifi, Video, ImagePlus, LogIn, LogOut,
+  Camera, CameraOff, Upload, CheckCircle2, XCircle,
+  Loader, Clock, User, Building2, Hash, LogIn, LogOut, Download,
 } from 'lucide-react';
 import { recognizeFace, fetchLog, detectFaces } from '../api';
 import { T } from '../theme';
+import { getFacingMode, getStableFaceMs, getImageQuality, getSimilarityThreshold, getAttendanceMarking, getFrameCaptureInterval } from '../settings';
 
 interface BBox { x: number; y: number; width: number; height: number; }
 interface DetectResult {
@@ -15,6 +15,7 @@ interface DetectResult {
 interface LogEntry {
   employee_id: string; name: string; department: string;
   time: string; status: 'Matched' | 'Unknown'; similarity: number;
+  type?: 'check_in' | 'check_out' | 'unknown';
 }
 interface RecognitionResult {
   matched: boolean; employee_id?: string; name: string;
@@ -23,7 +24,7 @@ interface RecognitionResult {
   message?: string;
 }
 
-const STABLE_MS = 2000;
+type LogFilter = 'all' | 'matched' | 'unknown';
 
 export default function LiveRecognitionPage() {
   const videoRef    = useRef<HTMLVideoElement>(null);
@@ -34,57 +35,103 @@ export default function LiveRecognitionPage() {
   const stableTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef     = useRef<HTMLInputElement>(null);
 
-  const [cameraOn, setCameraOn]         = useState(false);
-  const [result, setResult]             = useState<RecognitionResult | null>(null);
-  const [log, setLog]                   = useState<LogEntry[]>([]);
-  const [recognizing, setRecognizing]   = useState(false);
-  const [detecting, setDetecting]       = useState(false);
-  const [faceVisible, setFaceVisible]   = useState(false);
-  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
-  const [uploadBlob, setUploadBlob]     = useState<Blob | null>(null);
-  const [mode, setMode]                 = useState<'camera' | 'upload'>('camera');
-  const [capturedFrame, setCapturedFrame] = useState<string | null>(null);
-  const [logLoading, setLogLoading]     = useState(false);
+  const [cameraOn, setCameraOn]             = useState(false);
+  const [result, setResult]                 = useState<RecognitionResult | null>(null);
+  const [log, setLog]                       = useState<LogEntry[]>([]);
+  const [recognizing, setRecognizing]       = useState(false);
+  const [detecting, setDetecting]           = useState(false);
+  const [faceVisible, setFaceVisible]       = useState(false);
+  const [capturedFrame, setCapturedFrame]   = useState<string | null>(null);
+  const [logFilter, setLogFilter]           = useState<LogFilter>('all');
+  const [logLoading, setLogLoading]         = useState(false);
 
+  // ── Log fetch ──────────────────────────────────────────────────
   const refreshLog = useCallback(async () => {
     setLogLoading(true);
-    try { const d = await fetchLog(20); setLog(d.log ?? []); } catch {/**/}
+    try { const d = await fetchLog(50); setLog(d.log ?? []); } catch {/**/}
     finally { setLogLoading(false); }
   }, []);
 
-  // ── Canvas draw ────────────────────────────────────────────────
-  const drawBoxes = useCallback((det: DetectResult, vw: number, vh: number) => {
+  // ── Download log as CSV ───────────────────────────────────────
+  const downloadLog = () => {
+    const rows: string[] = [
+      'Time,Employee ID,Name,Department,Status,Similarity,Type,Method',
+    ];
+    log.forEach(e => {
+      // Quote fields that may contain spaces or special characters
+      const time = `"${e.time}"`;
+      const name = `"${e.name}"`;
+      const department = `"${e.department}"`;
+      const status = `"${e.status}"`;
+      const type = `"${e.type || '—'}"`;
+      rows.push(`${time},${e.employee_id},${name},${department},${status},${e.similarity},${type},Live Camera`);
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recognition_log_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ── Canvas: compute letterbox rect for objectFit:contain ──────
+  const getVideoRect = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return null;
+    const dispW = v.clientWidth,  dispH = v.clientHeight;
+    const vidW  = v.videoWidth  || 640, vidH = v.videoHeight || 480;
+    const scale = Math.min(dispW / vidW, dispH / vidH);
+    const rendW = vidW * scale,   rendH = vidH * scale;
+    const offX  = (dispW - rendW) / 2, offY = (dispH - rendH) / 2;
+    return { dispW, dispH, rendW, rendH, offX, offY, scale };
+  }, []);
+
+  // ── Draw corner-bracket boxes only (no full rectangle) ────────
+  const drawBoxes = useCallback((det: DetectResult) => {
     const canvas = overlayRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    canvas.width = vw; canvas.height = vh;
-    ctx.clearRect(0, 0, vw, vh);
+    const rect = getVideoRect();
+    if (!rect) return;
+    canvas.width  = rect.dispW;
+    canvas.height = rect.dispH;
+    ctx.clearRect(0, 0, rect.dispW, rect.dispH);
     if (!det.face_detected) return;
-    const sx = vw / (det.image_width || vw);
-    const sy = vh / (det.image_height || vh);
     det.faces.forEach(box => {
-      const x = box.x * sx, y = box.y * sy, w = box.width * sx, h = box.height * sy;
-      ctx.shadowColor = T.green; ctx.shadowBlur = 14;
-      ctx.strokeStyle = T.green; ctx.lineWidth = 2.5;
-      ctx.strokeRect(x, y, w, h);
-      ctx.shadowBlur = 0;
-      const cs = 18;
-      ctx.strokeStyle = T.green; ctx.lineWidth = 3.5;
-      [[x,y+cs,x,y,x+cs,y],[x+w-cs,y,x+w,y,x+w,y+cs],[x,y+h-cs,x,y+h,x+cs,y+h],[x+w-cs,y+h,x+w,y+h,x+w,y+h-cs]].forEach(pts => {
-        ctx.beginPath(); ctx.moveTo(pts[0],pts[1]); ctx.lineTo(pts[2],pts[3]); ctx.lineTo(pts[4],pts[5]); ctx.stroke();
-      });
+      const x = rect.offX + box.x      * rect.scale;
+      const y = rect.offY + box.y      * rect.scale;
+      const w =             box.width  * rect.scale;
+      const h =             box.height * rect.scale;
+      const cs = Math.min(w, h) * 0.18; // corner size = 18% of face box
+      ctx.strokeStyle = '#22c55e';
+      ctx.lineWidth   = 3;
+      ctx.lineCap     = 'round';
+      ctx.shadowColor = '#22c55e';
+      ctx.shadowBlur  = 10;
+      // top-left
+      ctx.beginPath(); ctx.moveTo(x, y + cs); ctx.lineTo(x, y); ctx.lineTo(x + cs, y); ctx.stroke();
+      // top-right
+      ctx.beginPath(); ctx.moveTo(x + w - cs, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cs); ctx.stroke();
+      // bottom-left
+      ctx.beginPath(); ctx.moveTo(x, y + h - cs); ctx.lineTo(x, y + h); ctx.lineTo(x + cs, y + h); ctx.stroke();
+      // bottom-right
+      ctx.beginPath(); ctx.moveTo(x + w - cs, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cs); ctx.stroke();
     });
-  }, []);
+  }, [getVideoRect]);
 
+  // ── Grab raw video frame as blob ──────────────────────────────
   const grabFrame = useCallback((): Promise<Blob | null> => new Promise(resolve => {
     const v = videoRef.current, c = captureRef.current;
     if (!v || !c) return resolve(null);
-    c.width = v.videoWidth || 640; c.height = v.videoHeight || 480;
+    c.width  = v.videoWidth  || 640;
+    c.height = v.videoHeight || 480;
     c.getContext('2d')?.drawImage(v, 0, 0);
-    c.toBlob(resolve, 'image/jpeg', 0.85);
+    c.toBlob(resolve, 'image/jpeg', getImageQuality());
   }), []);
 
+  // ── Detect loop ───────────────────────────────────────────────
   const runDetect = useCallback(async () => {
     if (detecting) return;
     setDetecting(true);
@@ -92,16 +139,15 @@ export default function LiveRecognitionPage() {
       const blob = await grabFrame();
       if (!blob) return;
       const res: DetectResult = await detectFaces(blob);
-      const vw = videoRef.current?.clientWidth || 640;
-      const vh = videoRef.current?.clientHeight || 480;
-      drawBoxes(res, vw, vh);
-      setFaceVisible(res.face_detected && res.number_of_faces === 1);
-      if (!res.face_detected || res.number_of_faces !== 1) {
+      if (res) drawBoxes(res);
+      setFaceVisible(!!res?.face_detected && res.number_of_faces === 1);
+      if (!res?.face_detected || res.number_of_faces !== 1) {
         if (stableTimer.current) { clearTimeout(stableTimer.current); stableTimer.current = null; }
       }
     } catch {/**/} finally { setDetecting(false); }
   }, [detecting, drawBoxes, grabFrame]);
 
+  // ── Auto-recognize when face stable ───────────────────────
   useEffect(() => {
     if (!cameraOn) return;
     if (faceVisible && !recognizing) {
@@ -110,25 +156,29 @@ export default function LiveRecognitionPage() {
           stableTimer.current = null;
           const blob = await grabFrame();
           if (blob) await runRecognition(blob);
-        }, STABLE_MS);
+        }, getStableFaceMs());
       }
     } else {
       if (stableTimer.current) { clearTimeout(stableTimer.current); stableTimer.current = null; }
     }
   }, [faceVisible, cameraOn, recognizing]);
 
+  // ── Camera controls ───────────────────────────────────────────
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width:{ideal:1280}, height:{ideal:720} } });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: getFacingMode() },
+      });
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await new Promise<void>(r => { videoRef.current!.onloadedmetadata = () => r(); });
         await videoRef.current.play();
       }
-      setCameraOn(true); setResult(null);
-      detectTimer.current = setInterval(runDetect, 800);
-    } catch { alert('Camera not available. Use Upload mode.'); }
+      setCameraOn(true); setResult(null); setCapturedFrame(null);
+      const interval = getFrameCaptureInterval();
+      detectTimer.current = setInterval(runDetect, interval);
+    } catch { alert('Camera not available. Use Upload Photo instead.'); }
   };
 
   const stopCamera = () => {
@@ -141,257 +191,471 @@ export default function LiveRecognitionPage() {
     setCameraOn(false); setFaceVisible(false);
   };
 
+  // ── Recognition ───────────────────────────────────────────────
   const runRecognition = async (blob: Blob) => {
     setRecognizing(true);
-    // Capture a preview of the image being recognized
-    const frameUrl = URL.createObjectURL(blob);
-    setCapturedFrame(frameUrl);
+    setCapturedFrame(URL.createObjectURL(blob));
     try {
-      const res = await recognizeFace(blob);
+      const res = await recognizeFace(blob, getSimilarityThreshold(), getAttendanceMarking());
       setResult(res);
       await refreshLog();
     } catch (e: unknown) { alert(e instanceof Error ? e.message : 'Recognition failed'); }
     finally { setRecognizing(false); }
   };
 
+  // ── Upload handler ────────────────────────────────────────────
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploadPreview(URL.createObjectURL(file));
-    setUploadBlob(file); setResult(null);
+    setResult(null);
+    setCapturedFrame(null);
+    runRecognition(file);
   };
 
   useEffect(() => { refreshLog(); return () => { stopCamera(); }; }, []);
 
+  // ── Filtered log ──────────────────────────────────────────────
+  const filteredLog = log.filter(e => {
+    if (logFilter === 'matched') return e.status === 'Matched';
+    if (logFilter === 'unknown') return e.status === 'Unknown';
+    return true;
+  });
+
+  // ── Parse time string "DD MMM YYYY  HH:MM:SS AM" ─────────────
+  const parseTime = (t: string) => {
+    const parts = t.split('  ');
+    return { date: parts[0] ?? t, time: parts[1] ?? '' };
+  };
+
   return (
-    <div className="fade-in" style={{ padding:'24px 28px' }}>
-      {/* Header */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:22 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          <h1 style={{ fontSize:20, fontWeight:700, color:T.text }}>Live Recognition</h1>
-        </div>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 12px', borderRadius:20, background:cameraOn?T.greenLight:'#f1f5f9', border:`1px solid ${cameraOn?T.green:T.border2}` }}>
-            <Wifi size={12} color={cameraOn?T.green:T.textDim} />
-            <span style={{ fontSize:11, fontWeight:600, color:cameraOn?T.green:T.textDim }}>{cameraOn?'Live':'Offline'}</span>
-          </div>
-          <button onClick={refreshLog} style={{ display:'flex', alignItems:'center', gap:5, padding:'7px 13px', borderRadius:8, border:`1px solid ${T.border2}`, background:T.cardBg, fontSize:12, fontWeight:600, color:T.textSub, cursor:'pointer' }}>
-            <RefreshCw size={12} /> Refresh Log
-          </button>
+    <div className="fade-in" style={{ padding: '24px 28px', minHeight: '100%' }}>
+
+      {/* ── Page header ─────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: T.text }}>Live Recognition</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: cameraOn ? T.green : T.textDim, display: 'inline-block', animation: cameraOn ? 'pulse-dot 1.5s infinite' : 'none' }} />
+          <span style={{ fontSize: 12, fontWeight: 600, color: cameraOn ? T.green : T.textDim }}>{cameraOn ? 'Live' : 'Offline'}</span>
         </div>
       </div>
 
-      {/* Mode toggle */}
-      <div style={{ display:'flex', gap:8, marginBottom:20 }}>
-        {(['camera','upload'] as const).map(m => (
-          <button key={m} onClick={() => { setMode(m); if (m !== 'camera') stopCamera(); setResult(null); }}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 18px', borderRadius:20, border:`1px solid ${mode===m?T.accent+'44':T.border2}`, fontSize:12, fontWeight:600, cursor:'pointer', background:mode===m?T.accentLight:'transparent', color:mode===m?T.accent:T.textSub }}>
-            {m === 'camera' ? <><Video size={13}/> Live Camera</> : <><ImagePlus size={13}/> Upload Photo</>}
-          </button>
-        ))}
-      </div>
+      {/* ── Main row: camera + result panel ─────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 20, marginBottom: 16 }}>
 
-      {/* Main layout — camera/upload + result side by side */}
-      <div style={{ display:'grid', gridTemplateColumns:'3fr 2fr', gap:20, marginBottom:20 }}>
+        {/* ── Camera feed ──────────────────────────────────── */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{
+            position: 'relative', borderRadius: 16, overflow: 'hidden',
+            background: '#111', aspectRatio: '16/9', width: '100%',
+            boxShadow: '0 4px 24px rgba(0,0,0,0.18)',
+          }}>
+            {/* Video */}
+            <video
+              ref={videoRef} autoPlay muted playsInline
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+            />
+            {/* Canvas overlay */}
+            <canvas
+              ref={overlayRef}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+            />
+            {/* Hidden capture canvas */}
+            <canvas ref={captureRef} style={{ display: 'none' }} />
 
-        {/* Left — Camera or Upload */}
-        <div>
-          {mode === 'camera' ? (
-            <div style={{ background:'#000', borderRadius:16, overflow:'hidden', position:'relative', width:'100%', height:400 }}>
-              <video ref={videoRef} autoPlay muted playsInline style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', display:'block' }} />
-              <canvas ref={overlayRef} style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', pointerEvents:'none' }} />
-              <canvas ref={captureRef} style={{ display:'none' }} />
-
-              {!cameraOn && (
-                <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10 }}>
-                  <div style={{ background:'rgba(255,255,255,0.1)', borderRadius:12, padding:16 }}><CameraOff size={32} color='#fff' /></div>
-                  <span style={{ color:'rgba(255,255,255,0.6)', fontSize:13 }}>Camera is off</span>
+            {/* Camera off state */}
+            {!cameraOn && (
+              <div style={{
+                position: 'absolute', inset: 0,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12,
+              }}>
+                <div style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 14, padding: 18 }}>
+                  <CameraOff size={36} color='rgba(255,255,255,0.5)' />
                 </div>
-              )}
-
-              {/* Camera badge */}
-              {cameraOn && (
-                <div style={{ position:'absolute', top:12, left:12, background:'rgba(0,0,0,0.55)', backdropFilter:'blur(4px)', borderRadius:20, padding:'4px 12px', display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#fff' }}>
-                  <span style={{ width:7, height:7, borderRadius:'50%', background:faceVisible?T.green:'#f59e0b', display:'inline-block', animation:'pulse-dot 1.5s infinite' }} />
-                  {faceVisible ? 'Face Detected' : 'Scanning...'}
-                </div>
-              )}
-
-              {/* Start/Stop */}
-              <button onClick={cameraOn ? stopCamera : startCamera}
-                style={{ position:'absolute', bottom:14, left:'50%', transform:'translateX(-50%)', padding:'9px 24px', borderRadius:20, border:'none', background:cameraOn?T.red:T.accent, color:'#fff', fontSize:12, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', gap:7, boxShadow:'0 4px 14px rgba(0,0,0,0.3)' }}>
-                {cameraOn ? <><CameraOff size={14}/> Stop Camera</> : <><Camera size={14}/> Start Camera</>}
-              </button>
-
-              {/* Recognizing overlay */}
-              {recognizing && (
-                <div style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0.5)', backdropFilter:'blur(2px)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10 }}>
-                  <Loader size={28} color='#fff' style={{ animation:'spin 1s linear infinite' }} />
-                  <span style={{ color:'#fff', fontSize:13, fontWeight:600 }}>Recognizing...</span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div>
-              <div onClick={() => fileRef.current?.click()}
-                style={{ borderRadius:16, border:`2px dashed ${uploadPreview?T.accent:T.border2}`, background:T.cardBg2, overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', height:300, width:'100%', transition:'border-color 0.2s' }}>
-                {uploadPreview
-                  ? <img src={uploadPreview} style={{ width:'100%', height:'100%', objectFit:'contain' }} />
-                  : <div style={{ textAlign:'center', color:T.textDim, padding:24 }}>
-                      <div style={{ background:T.accentLight, borderRadius:'50%', width:64, height:64, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 14px' }}>
-                        <Upload size={26} color={T.accent} />
-                      </div>
-                      <p style={{ fontSize:13, fontWeight:600, color:T.textSub, marginBottom:4 }}>Click to upload a photo</p>
-                      <p style={{ fontSize:11, color:T.textDim }}>JPG, PNG or WEBP</p>
-                    </div>
-                }
-              </div>
-              <input ref={fileRef} type="file" accept="image/*" style={{ display:'none' }} onChange={handleFile} />
-              <button onClick={() => uploadBlob && runRecognition(uploadBlob)} disabled={!uploadBlob || recognizing}
-                style={{ width:'100%', marginTop:12, padding:'12px 0', borderRadius:10, border:'none', background:uploadBlob&&!recognizing?T.accent:T.border2, color: uploadBlob&&!recognizing?'#fff':T.textDim, fontSize:13, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:8, boxShadow: uploadBlob&&!recognizing?`0 4px 14px ${T.accent}44`:'none' }}>
-                {recognizing ? <><Loader size={14} style={{ animation:'spin 1s linear infinite' }}/> Recognizing...</> : <><Search size={14}/> Recognize Face</>}
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Right — Recognition result card */}
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <div style={{ background:T.cardBg, borderRadius:16, border:`1px solid ${T.border}`, padding:20, boxShadow:T.shadow, flex:1 }}>
-            <h3 style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:16, textTransform:'uppercase', letterSpacing:0.5 }}>Recognition Result</h3>
-
-            {!result && (
-              <div style={{ textAlign:'center', padding:'32px 0', color:T.textDim }}>
-                <div style={{ background:T.cardBg2, borderRadius:'50%', width:56, height:56, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 12px' }}>
-                  <User size={24} color={T.textDim} />
-                </div>
-                <p style={{ fontSize:12 }}>No recognition yet</p>
-                <p style={{ fontSize:11, marginTop:4, color:T.textDim }}>Start camera or upload a photo</p>
+                <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: 13 }}>Camera is off</span>
               </div>
             )}
 
-            {result && (
-              <div>
-                {/* Captured frame */}
-                {capturedFrame && (
-                  <div style={{ marginBottom:14, borderRadius:10, overflow:'hidden', border:`2px solid ${result.matched?T.green:T.red}33` }}>
-                    <img src={capturedFrame} alt="Captured" style={{ width:'100%', maxHeight:160, objectFit:'cover', display:'block' }} />
-                  </div>
-                )}
+            {/* "Camera 01" badge — top right */}
+            <div style={{
+              position: 'absolute', top: 12, right: 14,
+              background: 'rgba(0,0,0,0.52)', backdropFilter: 'blur(6px)',
+              borderRadius: 20, padding: '5px 12px',
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 11, fontWeight: 600, color: '#fff',
+            }}>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                background: cameraOn ? T.green : '#f59e0b',
+                animation: cameraOn ? 'pulse-dot 1.5s infinite' : 'none',
+              }} />
+              Camera 01
+            </div>
 
-                {/* Status icon */}
-                <div style={{ textAlign:'center', marginBottom:16 }}>
-                  <div style={{ width:56, height:56, borderRadius:'50%',
-                    background: result.type==='check_in' ? T.greenLight : result.type==='check_out' ? T.blueLight : result.type==='already_checked_in' ? T.yellowLight : T.redLight,
-                    display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 10px',
-                    border:`2px solid ${result.type==='check_in'?T.green:result.type==='check_out'?T.blue:result.type==='already_checked_in'?T.yellow:T.red}33`
+            {/* Face status badge — top left */}
+            {cameraOn && (
+              <div style={{
+                position: 'absolute', top: 12, left: 14,
+                background: 'rgba(0,0,0,0.52)', backdropFilter: 'blur(6px)',
+                borderRadius: 20, padding: '5px 12px',
+                display: 'flex', alignItems: 'center', gap: 6,
+                fontSize: 11, fontWeight: 600, color: '#fff',
+              }}>
+                <span style={{
+                  width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                  background: faceVisible ? T.green : '#f59e0b',
+                  animation: 'pulse-dot 1.5s infinite',
+                }} />
+                {faceVisible ? 'Face Detected' : 'Scanning…'}
+              </div>
+            )}
+
+            {/* Recognizing overlay */}
+            {recognizing && (
+              <div style={{
+                position: 'absolute', inset: 0,
+                background: 'rgba(0,0,0,0.48)', backdropFilter: 'blur(3px)',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12,
+              }}>
+                <Loader size={30} color='#fff' style={{ animation: 'spin 1s linear infinite' }} />
+                <span style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>Recognizing…</span>
+              </div>
+            )}
+          </div>
+
+          {/* ── Capture / Upload buttons ──────────────────── */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {/* Capture Manually */}
+            <button
+              onClick={cameraOn ? async () => { const b = await grabFrame(); if (b) runRecognition(b); } : startCamera}
+              disabled={recognizing}
+              style={{
+                padding: '13px 0', borderRadius: 10, border: 'none',
+                background: T.accent, color: '#fff',
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                boxShadow: `0 4px 14px ${T.accent}55`,
+                opacity: recognizing ? 0.7 : 1,
+              }}
+            >
+              <Camera size={15} />
+              {cameraOn ? 'Capture Manually' : 'Start Camera'}
+            </button>
+
+            {/* Upload Photo */}
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={recognizing}
+              style={{
+                padding: '13px 0', borderRadius: 10,
+                border: `1.5px solid ${T.border2}`,
+                background: T.cardBg, color: T.text,
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                opacity: recognizing ? 0.7 : 1,
+              }}
+            >
+              <Upload size={15} />
+              Upload Photo
+            </button>
+            <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
+          </div>
+
+          {/* Stop camera button when on */}
+          {cameraOn && (
+            <button onClick={stopCamera} style={{ padding:'6px 14px', borderRadius:8, border:`1px solid ${T.border2}`, background:T.cardBg, fontSize:11, color:T.red, cursor:'pointer', alignSelf:'flex-end' }}>
+              Stop Camera
+            </button>
+          )}
+        </div>
+
+        {/* ── Recognition Result panel ─────────────────────── */}
+        <div style={{
+          background: T.cardBg, borderRadius: 16, border: `1px solid ${T.border}`,
+          padding: '20px 18px', boxShadow: T.shadow,
+          display: 'flex', flexDirection: 'column',
+        }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 18 }}>Recognition Result</h3>
+
+          {/* Empty state */}
+          {!result && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '32px 0', color: T.textDim }}>
+              <div style={{ width: 64, height: 64, borderRadius: 12, background: T.cardBg2, border: `1.5px solid ${T.border2}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <User size={28} color={T.textDim} />
+              </div>
+              <p style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>No recognition yet</p>
+              <p style={{ fontSize: 11, color: T.textDim, textAlign: 'center' }}>Start camera or upload a photo to begin</p>
+            </div>
+          )}
+
+          {/* Result */}
+          {result && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+              {/* Captured thumbnail with badge */}
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <div style={{ position: 'relative', display: 'inline-block' }}>
+                  {capturedFrame ? (
+                    <img
+                      src={capturedFrame}
+                      alt="Captured"
+                      style={{
+                        width: 110, height: 130,
+                        objectFit: 'cover',
+                        borderRadius: 12,
+                        border: `2.5px solid ${result.matched ? T.green : T.red}`,
+                        display: 'block',
+                      }}
+                    />
+                  ) : (
+                    <div style={{
+                      width: 110, height: 130, borderRadius: 12,
+                      background: T.cardBg2,
+                      border: `2.5px solid ${result.matched ? T.green : T.red}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <User size={32} color={T.textDim} />
+                    </div>
+                  )}
+                  {/* Status badge overlay */}
+                  <div style={{
+                    position: 'absolute', bottom: -10, right: -10,
+                    width: 28, height: 28, borderRadius: '50%',
+                    background: result.matched ? T.green : T.red,
+                    border: '2px solid #fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
                   }}>
                     {result.matched
-                      ? <CheckCircle2 size={28} color={result.type==='check_out'?T.blue:T.green} />
-                      : <XCircle size={28} color={T.red} />}
+                      ? <CheckCircle2 size={15} color='#fff' />
+                      : <XCircle      size={15} color='#fff' />}
                   </div>
+                </div>
+              </div>
 
+              {/* Matched details */}
+              {result.matched ? (
+                <div>
                   {/* Event type badge */}
-                  {result.matched && result.type && result.type !== 'unknown' && (
-                    <div style={{
-                      display:'inline-flex', alignItems:'center', gap:5,
-                      padding:'4px 14px', borderRadius:20, fontSize:12, fontWeight:700,
-                      marginBottom:4,
-                      background: result.type==='check_in' ? T.greenLight : result.type==='check_out' ? T.blueLight : T.yellowLight,
-                      color:      result.type==='check_in' ? T.green     : result.type==='check_out' ? T.blue     : T.yellow,
-                      border:`1px solid ${result.type==='check_in'?T.green:result.type==='check_out'?T.blue:T.yellow}44`,
-                    }}>
-                      {result.type === 'check_in'           && <><LogIn  size={12}/> Checked In</>}
-                      {result.type === 'check_out'          && <><LogOut size={12}/> Checked Out</>}
-                      {result.type === 'already_checked_in' && <><Clock  size={12}/> Already Checked In</>}
+                  {result.type && result.type !== 'unknown' && (
+                    <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        padding: '4px 14px', borderRadius: 20, fontSize: 11, fontWeight: 700,
+                        background: result.type === 'check_in' ? T.greenLight : result.type === 'check_out' ? T.blueLight : T.yellowLight,
+                        color:      result.type === 'check_in' ? T.green     : result.type === 'check_out' ? '#2563eb'  : '#d97706',
+                        border: `1px solid ${result.type === 'check_in' ? T.green + '44' : result.type === 'check_out' ? '#93c5fd' : '#fcd34d'}`,
+                      }}>
+                        {result.type === 'check_in'           && <><LogIn  size={11} /> Checked In</>}
+                        {result.type === 'check_out'          && <><LogOut size={11} /> Checked Out</>}
+                        {result.type === 'already_checked_in' && <><Clock  size={11} /> Already In</>}
+                      </span>
                     </div>
                   )}
 
-                  <div style={{ fontSize:15, fontWeight:800, color:result.matched?T.text:T.red, marginTop:4 }}>
-                    {result.matched ? 'Recognized' : 'Not Recognized'}
+                  {/* "Recognized" label */}
+                  <p style={{ fontSize: 13, fontWeight: 700, color: T.green, marginBottom: 4 }}>Recognized</p>
+
+                  {/* Name */}
+                  <p style={{ fontSize: 16, fontWeight: 800, color: T.text, marginBottom: 6 }}>{result.name}</p>
+
+                  {/* Employee ID */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
+                    <Hash size={11} color={T.textDim} />
+                    <span style={{ fontSize: 12, color: T.textSub }}>{result.employee_id}</span>
+                  </div>
+
+                  {/* Department */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 14 }}>
+                    <Building2 size={11} color={T.textDim} />
+                    <span style={{ fontSize: 12, color: T.textSub }}>{result.department}</span>
                   </div>
 
                   {/* Already checked in message */}
                   {result.type === 'already_checked_in' && result.message && (
-                    <div style={{ fontSize:11, color:T.yellow, marginTop:6, padding:'5px 10px', background:T.yellowLight, borderRadius:7 }}>
+                    <div style={{ marginBottom: 12, padding: '7px 10px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 7, fontSize: 11, color: '#92400e' }}>
                       {result.message}
                     </div>
                   )}
+
+                  {/* Check-in time */}
+                  <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+                    <p style={{ fontSize: 10, color: T.textDim, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.6 }}>
+                      {result.type === 'check_out' ? 'Check-out Time' : 'Check-in Time'}
+                    </p>
+                    <p style={{ fontSize: 22, fontWeight: 800, color: T.green, letterSpacing: -0.5 }}>
+                      {parseTime(result.time).time || result.time}
+                    </p>
+                    <p style={{ fontSize: 12, color: T.textSub, marginTop: 2 }}>
+                      {parseTime(result.time).date}
+                    </p>
+                  </div>
                 </div>
-
-                {result.matched && (
-                  <div style={{ background:T.cardBg2, borderRadius:10, padding:'14px 16px' }}>
-                    <div style={{ fontSize:15, fontWeight:800, color:T.text, marginBottom:4 }}>{result.name}</div>
-                    <div style={{ fontSize:12, color:T.textSub, marginBottom:10 }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:5, marginBottom:3 }}><Hash size={11}/> {result.employee_id}</div>
-                      <div style={{ display:'flex', alignItems:'center', gap:5 }}><Building2 size={11}/> {result.department}</div>
-                    </div>
-                    <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:10 }}>
-                      <div style={{ fontSize:10, color:T.textDim, marginBottom:3 }}>Check-in Time</div>
-                      <div style={{ fontSize:16, fontWeight:800, color:T.green }}>{result.time.split('  ')[1] ?? result.time}</div>
-                      <div style={{ fontSize:11, color:T.textSub, marginTop:2 }}>{result.time.split('  ')[0] ?? ''}</div>
-                    </div>
+              ) : (
+                <div style={{ textAlign: 'center' }}>
+                  <p style={{ fontSize: 14, fontWeight: 700, color: T.red, marginBottom: 6 }}>Not Recognized</p>
+                  <p style={{ fontSize: 12, color: T.textSub, marginBottom: 10 }}>No matching employee found</p>
+                  <div style={{ background: T.redLight, borderRadius: 8, padding: '8px 12px', display: 'inline-block' }}>
+                    <span style={{ fontSize: 11, color: T.red }}>Similarity: {(result.similarity * 100).toFixed(1)}%</span>
                   </div>
-                )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
-                {!result.matched && (
-                  <div style={{ background:T.redLight, borderRadius:10, padding:'12px 14px', textAlign:'center' }}>
-                    <p style={{ fontSize:12, color:T.red }}>No matching employee found</p>
-                    <p style={{ fontSize:11, color:T.textDim, marginTop:4 }}>Similarity: {(result.similarity*100).toFixed(1)}%</p>
-                  </div>
-                )}
+      {/* ── Recognition Log ─────────────────────────────────── */}
+      <div style={{ background: T.cardBg, borderRadius: 14, border: `1px solid ${T.border}`, boxShadow: T.shadow, overflow: 'hidden' }}>
+        {/* Log header */}
+        <div style={{ padding: '14px 20px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, color: T.text }}>Recognition Log</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {/* Filter dropdown */}
+            <div style={{ position: 'relative' }}>
+              <select
+                value={logFilter}
+                onChange={e => setLogFilter(e.target.value as LogFilter)}
+                style={{
+                  appearance: 'none', padding: '6px 28px 6px 12px',
+                  borderRadius: 8, border: `1px solid ${T.border2}`,
+                  background: T.cardBg, fontSize: 12, fontWeight: 600,
+                  color: T.textSub, cursor: 'pointer', outline: 'none',
+                  paddingRight: 28,
+                }}
+              >
+                <option value="all">All Status</option>
+                <option value="matched">Recognized</option>
+                <option value="unknown">Unrecognized</option>
+              </select>
+              <div style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+                ▾
               </div>
-            )}
+            </div>
+            <button
+              onClick={refreshLog}
+              style={{ padding: '6px 12px', borderRadius: 8, border: `1px solid ${T.border2}`, background: T.cardBg, fontSize: 12, fontWeight: 600, color: T.textSub, cursor: 'pointer' }}
+            >
+              ↻
+            </button>
+            <button
+              onClick={downloadLog}
+              style={{ padding: '6px 12px', borderRadius: 8, border: `1px solid ${T.border2}`, background: T.cardBg, fontSize: 12, fontWeight: 600, color: T.textSub, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}
+            >
+              <Download size={12} /> Export
+            </button>
           </div>
         </div>
+
+        {/* Table */}
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: T.cardBg2 }}>
+                {['Time', 'Employee', 'ID / Code', 'Department', 'Status', 'Method', 'Type'].map(h => (
+                  <th key={h} style={{
+                    textAlign: 'left', padding: '10px 16px',
+                    fontSize: 11, fontWeight: 600, color: T.textDim,
+                    borderBottom: `1px solid ${T.border}`, whiteSpace: 'nowrap',
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {logLoading && (
+                <tr><td colSpan={7} style={{ textAlign: 'center', padding: 32, color: T.textDim }}>
+                  <Loader size={18} style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }} />
+                </td></tr>
+              )}
+              {!logLoading && filteredLog.length === 0 && (
+                <tr><td colSpan={7} style={{ textAlign: 'center', padding: 32, color: T.textDim, fontSize: 12 }}>
+                  No recognition events yet
+                </td></tr>
+              )}
+              {!logLoading && filteredLog.map((e, i) => {
+                const { date, time } = parseTime(e.time);
+                const isMatched = e.status === 'Matched';
+                return (
+                  <tr key={i}
+                    style={{ borderTop: `1px solid ${T.border}`, transition: 'background 0.12s' }}
+                    onMouseEnter={ev => (ev.currentTarget as HTMLTableRowElement).style.background = T.hover}
+                    onMouseLeave={ev => (ev.currentTarget as HTMLTableRowElement).style.background = 'transparent'}
+                  >
+                    {/* Time — stacked */}
+                    <td style={{ padding: '11px 16px', whiteSpace: 'nowrap' }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{time}</div>
+                      <div style={{ fontSize: 10, color: T.textDim, marginTop: 2 }}>{date}</div>
+                    </td>
+
+                    {/* Employee — avatar + name */}
+                    <td style={{ padding: '11px 16px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {/* Avatar circle with initial */}
+                        <div style={{
+                          width: 34, height: 34, borderRadius: '50%', flexShrink: 0,
+                          background: isMatched ? T.accentLight : T.cardBg2,
+                          border: `1px solid ${isMatched ? T.accentMid + '55' : T.border2}`,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 13, fontWeight: 700,
+                          color: isMatched ? T.accent : T.textDim,
+                        }}>
+                          {isMatched ? e.name.charAt(0).toUpperCase() : '?'}
+                        </div>
+                        <span style={{ fontWeight: 600, color: T.text }}>{e.name}</span>
+                      </div>
+                    </td>
+
+                    {/* ID */}
+                    <td style={{ padding: '11px 16px', color: T.textSub, fontWeight: 500 }}>{e.employee_id}</td>
+
+                    {/* Department */}
+                    <td style={{ padding: '11px 16px', color: T.textSub }}>{e.department}</td>
+
+                    {/* Status pill */}
+                    <td style={{ padding: '11px 16px' }}>
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600,
+                        background: isMatched ? T.greenLight : T.redLight,
+                        color:      isMatched ? T.green      : T.red,
+                      }}>
+                        {isMatched ? <CheckCircle2 size={10} /> : <XCircle size={10} />}
+                        {isMatched ? 'Recognized' : 'Unrecognized'}
+                      </span>
+                    </td>
+
+                    {/* Method */}
+                    <td style={{ padding: '11px 16px', color: T.textSub, whiteSpace: 'nowrap' }}>
+                      Live Camera
+                    </td>
+
+                    {/* Type — check in / check out */}
+                    <td style={{ padding: '11px 16px' }}>
+                      {e.type === 'check_in' && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: T.greenLight, color: T.green }}>
+                          <LogIn size={9} /> Check In
+                        </span>
+                      )}
+                      {e.type === 'check_out' && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: T.blueLight, color: '#2563eb' }}>
+                          <LogOut size={9} /> Check Out
+                        </span>
+                      )}
+                      {(!e.type || e.type === 'unknown') && (
+                        <span style={{ color: T.textDim, fontSize: 11 }}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      {/* Recognition log */}
-      <div style={{ background:T.cardBg, borderRadius:14, border:`1px solid ${T.border}`, boxShadow:T.shadow, overflow:'hidden' }}>
-        <div style={{ padding:'14px 18px', borderBottom:`1px solid ${T.border}`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <h3 style={{ fontSize:13, fontWeight:700, color:T.text }}>Recognition Log</h3>
-          <span style={{ fontSize:11, color:T.textDim }}>{log.length} entries</span>
-        </div>
-        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-          <thead>
-            <tr style={{ background:T.cardBg2 }}>
-              {['#','Employee ID','Name','Time','Type','Status'].map(h=>(
-                <th key={h} style={{ textAlign:'left', padding:'9px 14px', fontSize:10, fontWeight:600, color:T.textDim, textTransform:'uppercase', letterSpacing:0.7 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {!logLoading && log.length===0&&<tr><td colSpan={6} style={{ textAlign:'center', padding:24, color:T.textDim }}>No recognition events yet</td></tr>}
-            {log.map((e,i)=>(
-              <tr key={i} style={{ borderTop:`1px solid ${T.border}`, transition:'background 0.12s' }}
-                onMouseEnter={ev=>(ev.currentTarget as HTMLTableRowElement).style.background=T.hover}
-                onMouseLeave={ev=>(ev.currentTarget as HTMLTableRowElement).style.background='transparent'}>
-                <td style={{ padding:'9px 14px', color:T.textDim }}>{i+1}</td>
-                <td style={{ padding:'9px 14px', fontWeight:700, color:T.accent, fontSize:12 }}>{e.employee_id}</td>
-                <td style={{ padding:'9px 14px', fontWeight:600, color:T.text }}>{e.name}</td>
-                <td style={{ padding:'9px 14px', color:T.textDim, whiteSpace:'nowrap' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:4 }}><Clock size={10}/>{e.time}</div>
-                </td>
-                <td style={{ padding:'9px 14px' }}>
-                  {(e as LogEntry & {type?:string}).type === 'check_in' && (
-                    <span style={{ display:'inline-flex', alignItems:'center', gap:3, padding:'2px 9px', borderRadius:20, fontSize:11, fontWeight:600, background:T.greenLight, color:T.green }}><LogIn size={9}/> Check In</span>
-                  )}
-                  {(e as LogEntry & {type?:string}).type === 'check_out' && (
-                    <span style={{ display:'inline-flex', alignItems:'center', gap:3, padding:'2px 9px', borderRadius:20, fontSize:11, fontWeight:600, background:T.blueLight, color:T.blue }}><LogOut size={9}/> Check Out</span>
-                  )}
-                  {!(e as LogEntry & {type?:string}).type && <span style={{ color:T.textDim, fontSize:11 }}>—</span>}
-                </td>
-                <td style={{ padding:'9px 14px' }}>
-                  <span style={{ display:'inline-flex', alignItems:'center', gap:3, padding:'2px 9px', borderRadius:20, fontSize:11, fontWeight:600, background:e.status==='Matched'?T.greenLight:T.redLight, color:e.status==='Matched'?T.green:T.red }}>
-                    {e.status==='Matched'?<CheckCircle2 size={9}/>:<XCircle size={9}/>} {e.status}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}} @keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+      <style>{`
+        @keyframes spin      { to { transform: rotate(360deg); } }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+      `}</style>
     </div>
   );
 }

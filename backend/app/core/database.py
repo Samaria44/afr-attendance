@@ -31,6 +31,12 @@ async def connect_db():
     await db["recognition_log"].create_index(
         [("timestamp", DESCENDING)]
     )
+    await db["recognition_log"].create_index(
+        [("employee_id", ASCENDING), ("timestamp", DESCENDING)]
+    )
+    await db["recognition_log"].create_index(
+        [("status", ASCENDING), ("timestamp", DESCENDING)]
+    )
     logger.info("Connected to MongoDB → %s", settings.DB_NAME)
 
 

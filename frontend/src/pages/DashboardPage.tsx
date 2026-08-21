@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Users, CheckCircle2, XCircle, Activity, RefreshCw, TrendingUp, Clock, UserCheck } from 'lucide-react';
-import { fetchLog, fetchEmployees } from '../api';
+import { Users, CheckCircle2, XCircle, Activity, RefreshCw, TrendingUp, Clock, UserCheck, LogIn, LogOut, Download } from 'lucide-react';
+import { fetchLog, fetchEmployees, fetchTodaySummary, type TodaySummary } from '../api';
 import { T } from '../theme';
 import { getUser } from '../auth';
 
@@ -14,17 +14,48 @@ export default function DashboardPage() {
   const [employees, setEmployees] = useState<unknown[]>([]);
   const [log, setLog]             = useState<LogEntry[]>([]);
   const [loading, setLoading]     = useState(true);
+  const [summary, setSummary]     = useState<TodaySummary | null>(null);
+  const [period, setPeriod]       = useState<'today'|'week'|'month'|'all'>('today');
 
   const load = async () => {
     setLoading(true);
     try {
-      const [e, l] = await Promise.all([fetchEmployees(), fetchLog(100)]);
+      const [e, l, s] = await Promise.all([fetchEmployees(), fetchLog(200), fetchTodaySummary()]);
       setEmployees(e.employees ?? []);
       setLog(l.log ?? []);
+      setSummary(s);
     } catch { /**/ } finally { setLoading(false); }
   };
 
+  const downloadLog = () => {
+    const rows: string[] = [
+      'Employee ID,Name,Department,Time,Status,Similarity',
+    ];
+    filteredLog.forEach(e => {
+      rows.push(`${e.employee_id},${e.name},${e.department},${e.time},${e.status},${e.similarity}`);
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recognition_log_${period}_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   useEffect(() => { load(); }, []);
+
+  // Filter log by period
+  const filteredLog = log.filter(e => {
+    if (period === 'all') return true;
+    const d = new Date(e.time);
+    if (isNaN(d.getTime())) return false;
+    const now = new Date();
+    if (period === 'today') return d.toDateString() === now.toDateString();
+    if (period === 'week')  { const wk = new Date(now); wk.setDate(now.getDate()-7); return d >= wk; }
+    if (period === 'month') return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    return true;
+  });
 
   const matched   = log.filter(e => e.status === 'Matched').length;
   const unknown   = log.filter(e => e.status === 'Unknown').length;
@@ -86,9 +117,30 @@ export default function DashboardPage() {
 
         {/* Recent log table */}
         <div style={{ background: T.cardBg, borderRadius: T.r2, border: `1px solid ${T.border}`, boxShadow: T.shadow, overflow: 'hidden' }}>
-          <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <h2 style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Recent Check-ins</h2>
-            <span style={{ fontSize: 11, color: T.textDim }}>Last {Math.min(log.length, 8)}</span>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {/* Period filter pills */}
+              {(['today','week','month','all'] as const).map(p => (
+                <button key={p} onClick={() => setPeriod(p)} style={{
+                  padding: '4px 11px', borderRadius: 20, border: `1px solid ${period===p ? T.accent+'55' : T.border2}`,
+                  fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                  background: period===p ? T.accentLight : 'transparent',
+                  color:      period===p ? T.accent      : T.textSub,
+                }}>
+                  {p === 'today' ? 'Today' : p === 'week' ? 'Week' : p === 'month' ? 'Month' : 'All'}
+                </button>
+              ))}
+              {/* Download button */}
+              <button onClick={downloadLog} style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                padding: '4px 10px', borderRadius: 20, border: `1px solid ${T.border2}`,
+                fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                background: 'transparent', color: T.textSub,
+              }}>
+                <Download size={12} /> Export
+              </button>
+            </div>
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
@@ -104,7 +156,7 @@ export default function DashboardPage() {
                   {[140,100,70,70].map((w,j) => <td key={j} style={{ padding: '11px 16px' }}><Skel w={w} h={11} /></td>)}
                 </tr>
               ))}
-              {!loading && log.slice(0,8).map((e, i) => (
+              {!loading && filteredLog.slice(0,8).map((e, i) => (
                 <tr key={i} style={{ borderTop: `1px solid ${T.border}`, transition: 'background 0.12s' }}
                   onMouseEnter={ev => (ev.currentTarget as HTMLTableRowElement).style.background = T.hover}
                   onMouseLeave={ev => (ev.currentTarget as HTMLTableRowElement).style.background = 'transparent'}>
@@ -135,8 +187,52 @@ export default function DashboardPage() {
 
         {/* Right panel */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Today's attendance summary */}
+          <div style={{ background: T.cardBg, borderRadius: T.r2, border: `1px solid ${T.border}`, padding: '16px 18px', boxShadow: T.shadow }}>
+            <h3 style={{ fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 12 }}>Today's Attendance</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+              <div style={{ background: T.greenLight, borderRadius: 9, padding: '10px 12px', textAlign: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, marginBottom: 3 }}>
+                  <LogIn size={11} color={T.green} />
+                  <span style={{ fontSize: 10, fontWeight: 600, color: T.green }}>Checked In</span>
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: T.green }}>{loading ? '—' : (summary?.checked_in_count ?? 0)}</div>
+              </div>
+              <div style={{ background: T.blueLight, borderRadius: 9, padding: '10px 12px', textAlign: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, marginBottom: 3 }}>
+                  <LogOut size={11} color={T.blue} />
+                  <span style={{ fontSize: 10, fontWeight: 600, color: T.blue }}>Checked Out</span>
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: T.blue }}>{loading ? '—' : (summary?.checked_out_count ?? 0)}</div>
+              </div>
+            </div>
+            {/* Currently In list */}
+            {!loading && summary && summary.currently_in.length > 0 && (
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: T.textDim, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 6 }}>Currently Inside</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5, maxHeight: 120, overflowY: 'auto' }}>
+                  {summary.currently_in.map((p, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 7, background: T.cardBg2 }}>
+                      <div style={{ width: 26, height: 26, borderRadius: '50%', background: T.accentLight, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: T.accent, flexShrink: 0 }}>
+                        {p.name.charAt(0)}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                        <div style={{ fontSize: 10, color: T.textDim }}>{p.time}</div>
+                      </div>
+                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: T.green, flexShrink: 0, animation: 'pulse-dot 2s infinite' }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {!loading && summary && summary.currently_in.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '10px 0', fontSize: 11, color: T.textDim }}>No one is currently checked in</div>
+            )}
+          </div>
+
           {/* Donut */}
-          <div style={{ background: T.cardBg, borderRadius: T.r2, border: `1px solid ${T.border}`, padding: '18px', boxShadow: T.shadow, flex: 1 }}>
+          <div style={{ background: T.cardBg, borderRadius: T.r2, border: `1px solid ${T.border}`, padding: '18px', boxShadow: T.shadow }}>
             <h3 style={{ fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 14 }}>Recognition Rate</h3>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
               <Donut matched={matched} total={log.length} />
@@ -146,23 +242,13 @@ export default function DashboardPage() {
               <LegRow color={T.red}   label="Unknown" val={unknown} total={log.length} />
             </div>
           </div>
-
-          {/* Quick stats */}
-          <div style={{ background: T.cardBg, borderRadius: T.r2, border: `1px solid ${T.border}`, padding: '16px 18px', boxShadow: T.shadow }}>
-            <h3 style={{ fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 12 }}>Quick Stats</h3>
-            {[
-              { label: 'Total Employees', value: employees.length, color: T.accent },
-              { label: 'Total Events',    value: log.length,        color: T.blue   },
-              { label: 'Match Rate',      value: `${matchRate}%`,   color: T.green  },
-            ].map(q => (
-              <div key={q.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
-                <span style={{ fontSize: 12, color: T.textSub }}>{q.label}</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: q.color }}>{loading ? '—' : q.value}</span>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+      `}</style>
     </div>
   );
 }

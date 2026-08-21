@@ -29,6 +29,7 @@ export default function UsersPage() {
   const [loading, setLoading]   = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [deleting, setDeleting] = useState<string|null>(null);
+  const [roleFilter, setRoleFilter] = useState<'all'|'admin'|'operator'|'viewer'>('all');
   const [uname, setUname]       = useState('');
   const [pass, setPass]         = useState('');
   const [fname, setFname]       = useState('');

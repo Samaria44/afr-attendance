@@ -16,6 +16,7 @@ export default function EmployeesPage() {
   const user = getUser();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [search, setSearch]       = useState('');
+  const [deptFilter, setDeptFilter] = useState('all');
   const [loading, setLoading]     = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [deleting, setDeleting]   = useState<string|null>(null);
@@ -36,11 +37,15 @@ export default function EmployeesPage() {
   };
   useEffect(() => { load(); }, []);
 
-  const filtered = employees.filter(e =>
-    e.name.toLowerCase().includes(search.toLowerCase()) ||
-    e.employee_id.toLowerCase().includes(search.toLowerCase()) ||
-    e.department.toLowerCase().includes(search.toLowerCase())
-  );
+  const depts = ['all', ...Array.from(new Set(employees.map(e => e.department)))];
+
+  const filtered = employees.filter(e => {
+    const matchSearch = e.name.toLowerCase().includes(search.toLowerCase()) ||
+      e.employee_id.toLowerCase().includes(search.toLowerCase()) ||
+      e.department.toLowerCase().includes(search.toLowerCase());
+    const matchDept = deptFilter === 'all' || e.department === deptFilter;
+    return matchSearch && matchDept;
+  });
 
   const handleDelete = async (id: string) => {
     if (!confirm(`Delete employee ${id}?`)) return;
@@ -84,7 +89,23 @@ export default function EmployeesPage() {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Department filter pills */}
+      {depts.length > 2 && (
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:12 }}>
+          {depts.map(d => (
+            <button key={d} onClick={() => setDeptFilter(d)} style={{
+              padding:'4px 12px', borderRadius:20, fontSize:11, fontWeight:600, cursor:'pointer',
+              border:`1px solid ${deptFilter===d ? T.accent+'55' : T.border2}`,
+              background: deptFilter===d ? T.accentLight : 'transparent',
+              color:      deptFilter===d ? T.accent      : T.textSub,
+            }}>
+              {d === 'all' ? 'All Departments' : d}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Table card */}
       <div style={{ background:T.cardBg, borderRadius:T.r2, border:`1px solid ${T.border}`, boxShadow:T.shadow, overflow:'hidden' }}>
         <div style={{ padding:'12px 16px', borderBottom:`1px solid ${T.border}`, display:'flex', alignItems:'center', gap:10 }}>
           <Search size={14} color={T.textDim} />

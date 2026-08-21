@@ -96,9 +96,15 @@ export async function detectFaces(imageBlob: Blob) {
   return res.json();
 }
 
-export async function recognizeFace(imageBlob: Blob) {
+export async function recognizeFace(imageBlob: Blob, threshold?: number, attendanceMode?: string) {
   const form = new FormData();
   form.append('image', imageBlob, 'capture.jpg');
+  if (threshold !== undefined) {
+    form.append('threshold', threshold.toString());
+  }
+  if (attendanceMode !== undefined) {
+    form.append('attendance_mode', attendanceMode);
+  }
   return handleResponse(
     await fetch(`${BASE}/recognize`, { method: 'POST', headers: authHeaders(), body: form })
   );
@@ -121,5 +127,61 @@ export async function deleteEmployee(employeeId: string) {
     await fetch(`${BASE}/employees/${encodeURIComponent(employeeId)}`, {
       method: 'DELETE', headers: authHeaders(),
     })
+  );
+}
+
+// ── Attendance ────────────────────────────────────────────────────
+export interface AttendanceSession {
+  check_in_time:  string;
+  check_in_ts:    string;
+  check_out_time: string | null;
+  check_out_ts:   string | null;
+  duration_min:   number | null;
+}
+
+export interface AttendanceRecord {
+  employee_id:    string;
+  name:           string;
+  department:     string;
+  date:           string;
+  sessions:       AttendanceSession[];
+  total_sessions: number;
+  total_min:      number;
+  first_check_in: string | null;
+  last_check_out: string | null;
+  status:         string;
+}
+
+export interface TodaySummary {
+  checked_in_count:  number;
+  checked_out_count: number;
+  total_today:       number;
+  currently_in: {
+    employee_id: string;
+    name:        string;
+    department:  string;
+    check_in_ts: string;
+    time:        string;
+  }[];
+}
+
+export async function fetchAttendance(params?: {
+  date_from?:    string;
+  date_to?:      string;
+  employee_id?:  string;
+}) {
+  const q = new URLSearchParams();
+  if (params?.date_from)   q.append('date_from',   params.date_from);
+  if (params?.date_to)     q.append('date_to',     params.date_to);
+  if (params?.employee_id) q.append('employee_id', params.employee_id);
+  const qs = q.toString() ? `?${q.toString()}` : '';
+  return handleResponse(
+    await fetch(`${BASE}/attendance${qs}`, { headers: authHeaders() })
+  );
+}
+
+export async function fetchTodaySummary(): Promise<TodaySummary> {
+  return handleResponse(
+    await fetch(`${BASE}/attendance/today-summary`, { headers: authHeaders() })
   );
 }

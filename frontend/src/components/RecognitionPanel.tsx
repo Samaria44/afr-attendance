@@ -5,6 +5,7 @@ import {
   User, Building2, Clock, Hash, ScanFace,
 } from 'lucide-react';
 import { recognizeFace, fetchLog, detectFaces } from '../api';
+import { getFacingMode, getStableFaceMs, getImageQuality, getSimilarityThreshold, getAttendanceMarking, getFrameCaptureInterval } from '../settings';
 
 interface BBox { x: number; y: number; width: number; height: number; }
 
@@ -35,9 +36,6 @@ interface RecognitionResult {
 }
 
 type Mode = 'upload' | 'camera';
-
-// How long a face must be continuously visible before auto-recognizing (ms)
-const STABLE_MS = 2000;
 
 export default function RecognitionPanel() {
   const videoRef     = useRef<HTMLVideoElement>(null);
@@ -129,7 +127,7 @@ export default function RecognitionPanel() {
       canvas.width  = video.videoWidth  || 640;
       canvas.height = video.videoHeight || 480;
       canvas.getContext('2d')?.drawImage(video, 0, 0);
-      canvas.toBlob(resolve, 'image/jpeg', 0.85);
+      canvas.toBlob(resolve, 'image/jpeg', getImageQuality());
     });
   }, []);
 
@@ -171,7 +169,7 @@ export default function RecognitionPanel() {
           stableTimerRef.current = null;
           const blob = await grabFrame();
           if (blob) await runRecognition(blob);
-        }, STABLE_MS);
+        }, getStableFaceMs());
       }
     } else {
       if (stableTimerRef.current) {
@@ -206,6 +204,7 @@ export default function RecognitionPanel() {
       const constraints: MediaStreamConstraints = {
         video: {
           deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
+          facingMode: selectedDeviceId ? undefined : getFacingMode(),
           width:  { ideal: 1280 },
           height: { ideal: 720 },
         }
@@ -224,7 +223,8 @@ export default function RecognitionPanel() {
       }
       setCameraOn(true);
       setResult(null);
-      detectTimerRef.current = setInterval(runDetect, 800);
+      const interval = getFrameCaptureInterval();
+      detectTimerRef.current = setInterval(runDetect, interval);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Camera error';
       setCamError(msg.includes('Permission') || msg.includes('NotAllowed')
@@ -261,11 +261,11 @@ export default function RecognitionPanel() {
   const runRecognition = async (blob: Blob) => {
     setRecognizing(true);
     try {
-      const res = await recognizeFace(blob);
+      const res = await recognizeFace(blob, getSimilarityThreshold(), getAttendanceMarking());
       setResult(res);
       await refreshLog();
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : 'Recognition failed');
+      setCamError(e instanceof Error ? e.message : 'Recognition failed');
     } finally {
       setRecognizing(false);
     }
@@ -489,7 +489,7 @@ export default function RecognitionPanel() {
 
           {cameraOn && (
             <p style={{ fontSize: 11, textAlign: 'center', color: '#94a3b8', marginTop: 8 }}>
-              Hold face steady for {STABLE_MS / 1000}s to trigger automatic recognition
+              Hold face steady for {getStableFaceMs() / 1000}s to trigger automatic recognition
             </p>
           )}
         </div>
